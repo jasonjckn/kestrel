@@ -48,6 +48,7 @@ extends NettyHandler[MemcacheRequest](channelGroup, queueCollection, maxOpenTran
         } else {
           channel.write(new MemcacheResponse("ERROR"))
         }
+
       case "set" =>
         val now = Time.now
         val expiry = request.line(3).toInt
@@ -116,10 +117,14 @@ extends NettyHandler[MemcacheRequest](channelGroup, queueCollection, maxOpenTran
   private def get(name: String): Unit = {
     var key = name
     var timeout: Option[Time] = None
+    var xid: Int = -1
     var closing = false
     var opening = false
     var aborting = false
     var peeking = false
+    var ack = false
+    var fail = false
+    var syn = false
 
     if (name contains '/') {
       val options = name.split("/")
@@ -129,10 +134,17 @@ extends NettyHandler[MemcacheRequest](channelGroup, queueCollection, maxOpenTran
         if (opt startsWith "t=") {
           timeout = Some(opt.substring(2).toInt.milliseconds.fromNow)
         }
+        if (opt startsWith "id=") {
+          xid = opt.substring(3).toInt
+        }
         if (opt == "close") closing = true
         if (opt == "open") opening = true
         if (opt == "abort") aborting = true
         if (opt == "peek") peeking = true
+
+        if (opt == "syn") syn = true
+        if (opt == "ack") ack = true
+        if (opt == "fail") fail = true
       }
     }
 
@@ -142,15 +154,51 @@ extends NettyHandler[MemcacheRequest](channelGroup, queueCollection, maxOpenTran
       return
     }
 
+    if ((syn || ack || fail) && (opening || closing || peeking || aborting)
+     || (ack && fail)) {
+      channel.write(new MemcacheResponse("CLIENT_ERROR"))
+      channel.close()
+      return
+    }
+
     if (aborting) {
       abortTransaction(key)
       channel.write(new MemcacheResponse("END"))
+    } else if (fail) {
+        if (xid == -1) {
+            log.warning("Attempt to fail transaction without xid");
+            return
+        }
+        failTransaction(key, xid)
+        channel.write(new MemcacheResponse("END"))
     } else {
       if (closing) {
         closeTransaction(key)
-        if (!opening) channel.write(new MemcacheResponse("END"))
+        if (!opening && !syn) channel.write(new MemcacheResponse("END"))
       }
-      if (opening || !closing) {
+      if (ack) {
+        if (xid == -1) {
+            log.warning("Attempt to ack transaction without xid");
+            return
+        }
+        ackTransaction(key, xid)
+        if (!opening && !syn) channel.write(new MemcacheResponse("END"))
+      }
+      if (syn) {
+        try {
+          getItemSyn(key, timeout) {
+            case None =>
+              channel.write(new MemcacheResponse("END"))
+            case Some(item) =>
+              channel.write(new MemcacheResponse("VALUE %s 0 %d\nID %d".format(key, item.data.length, item.xid), item.data))
+          }
+        } catch {
+          case e: TooManyOpenTransactionsException =>
+            channel.write(new MemcacheResponse("ERROR"))
+            channel.close()
+            return
+        }
+      } else if (opening || (!closing && !ack)) {
         if (pendingTransactions.size(key) > 0 && !peeking && !opening) {
           log.warning("Attempt to perform a non-transactional fetch with an open transaction on " +
                       " '%s' (sid %d, %s)", key, sessionId, clientDescription)
