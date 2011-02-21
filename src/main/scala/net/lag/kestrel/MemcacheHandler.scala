@@ -190,7 +190,7 @@ extends NettyHandler[MemcacheRequest](channelGroup, queueCollection, maxOpenTran
             case None =>
               channel.write(new MemcacheResponse("END"))
             case Some(item) =>
-              channel.write(new MemcacheResponse("VALUE %s 0 %d\nID %d".format(key, item.data.length, item.xid), item.data))
+              channel.write(new MemcacheResponse("VALUE %s 0 %d\r\nID %d".format(key, item.data.length, item.xid), item.data))
           }
         } catch {
           case e: TooManyOpenTransactionsException =>
