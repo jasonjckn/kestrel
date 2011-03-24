@@ -154,8 +154,9 @@ extends NettyHandler[MemcacheRequest](channelGroup, queueCollection, maxOpenTran
       return
     }
 
-    if ((syn || ack || fail) && (opening || closing || peeking || aborting)
-     || (ack && fail)) {
+    if (((syn || ack || fail) && (opening || closing || peeking || aborting))
+     || (ack && fail)
+     || (syn && (ack || fail))) {
       channel.write(new MemcacheResponse("CLIENT_ERROR"))
       channel.close()
       return
@@ -167,10 +168,16 @@ extends NettyHandler[MemcacheRequest](channelGroup, queueCollection, maxOpenTran
     } else if (fail) {
         if (xid == -1) {
             log.warning("Attempt to fail transaction without xid");
+            channel.write(new MemcacheResponse("CLIENT_ERROR"))
+            channel.close()
             return
         }
-        failTransaction(key, xid)
-        channel.write(new MemcacheResponse("END"))
+        if(failTransaction(key, xid)) {
+          channel.write(new MemcacheResponse("TRANSACTION_FAIL"))
+        } else {
+          channel.write(new MemcacheResponse("END"));
+        }
+        return;
     } else {
       if (closing) {
         closeTransaction(key)
@@ -179,10 +186,16 @@ extends NettyHandler[MemcacheRequest](channelGroup, queueCollection, maxOpenTran
       if (ack) {
         if (xid == -1) {
             log.warning("Attempt to ack transaction without xid");
+            channel.write(new MemcacheResponse("CLIENT_ERROR"))
+            channel.close()
             return
         }
-        ackTransaction(key, xid)
-        if (!opening && !syn) channel.write(new MemcacheResponse("END"))
+        if (ackTransaction(key, xid)) {
+          channel.write(new MemcacheResponse("TRANSACTION_ACK"))
+        } else {
+          channel.write(new MemcacheResponse("END"));
+        }
+        return;
       }
       if (syn) {
         try {

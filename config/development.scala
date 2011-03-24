@@ -11,7 +11,7 @@ new KestrelConfig {
 
   queuePath = "/var/spool/kestrel"
 
-  clientTimeout = 30.seconds
+  clientTimeout = 0.second
 
   expirationTimerFrequency = 1.second
 

@@ -1,0 +1,3 @@
+(defproject kestrel "2.0.0-SNAPSHOT"
+            )
+    
