@@ -30,7 +30,8 @@ import org.jboss.netty.channel.group.ChannelGroup
 object TextCodec {
   val MAX_PUT_BUFFER = 1024
 
-  def decoder = new Codec(read, write)
+  def apply(bytesRead: Int => Unit, bytesWritten: Int => Unit) = new Codec(read, write,
+    bytesRead, bytesWritten)
 
   val read = readLine(true, "ISO-8859-1") { line =>
     if (line.endsWith(":")) {
@@ -88,6 +89,9 @@ case class ErrorResponse(message: String) extends TextResponse {
 case class CountResponse(count: Long) extends TextResponse {
   def toBuffer = ChannelBuffers.wrappedBuffer(("+" + count.toString + "\n").getBytes("ascii"))
 }
+case class StringResponse(message: String) extends TextResponse {
+  def toBuffer = ChannelBuffers.wrappedBuffer((":" + message + "\n").getBytes("ascii"))
+}
 
 /**
  * Simple text-line protocol handler for a kestrel connection.
@@ -127,7 +131,7 @@ extends NettyHandler[TextRequest](channelGroup, queueCollection, maxOpenTransact
           try {
             val timeout = request.args.drop(1).headOption.map { _.toInt.milliseconds.fromNow }
             closeAllTransactions(queueName)
-            getItem(queueName, timeout, true, false) { item =>
+            getItem(queueName, timeout, true, false).map { item =>
               channel.write(ItemResponse(item.map { _.data }))
             }
           } catch {
@@ -146,7 +150,7 @@ extends NettyHandler[TextRequest](channelGroup, queueCollection, maxOpenTransact
           try {
             val timeout = request.args.drop(1).headOption.map { _.toInt.milliseconds.fromNow }
             closeAllTransactions(queueName)
-            getItem(queueName, timeout, false, true) { item =>
+            getItem(queueName, timeout, false, true).map { item =>
               channel.write(ItemResponse(item.map { _.data }))
             }
           } catch {
@@ -186,11 +190,20 @@ extends NettyHandler[TextRequest](channelGroup, queueCollection, maxOpenTransact
           flush(request.args(0))
           channel.write(CountResponse(0))
         }
+      case "delete" =>
+        if (request.args.size < 1) {
+          channel.write(ErrorResponse("Queue name required."))
+        } else {
+          delete(request.args(0))
+          channel.write(CountResponse(0))
+        }
       case "quit" =>
         channel.close()
       case "shutdown" =>
         shutdown()
         channel.write(CountResponse(0))
+      case "version" =>
+        channel.write(new StringResponse(Kestrel.runtime.jarVersion))
       case x =>
         channel.write(ErrorResponse("Unknown command: " + x))
     }

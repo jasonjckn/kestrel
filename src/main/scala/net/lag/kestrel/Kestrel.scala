@@ -18,14 +18,14 @@
 package net.lag.kestrel
 
 import java.net.InetSocketAddress
-import java.util.concurrent.{CountDownLatch, Executors, ExecutorService, TimeUnit}
+import java.util.concurrent.{Executors, ExecutorService, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.{immutable, mutable}
-import com.twitter.admin.{RuntimeEnvironment, Service, ServiceTracker}
 import com.twitter.conversions.time._
 import com.twitter.logging.Logger
 import com.twitter.naggati.codec.MemcacheCodec
-import com.twitter.stats.Stats
+import com.twitter.ostrich.admin.{PeriodicBackgroundProcess, RuntimeEnvironment, Service, ServiceTracker}
+import com.twitter.ostrich.stats.Stats
 import com.twitter.util.{Duration, Eval, Time, Timer => TTimer, TimerTask => TTimerTask}
 import org.jboss.netty.bootstrap.ServerBootstrap
 import org.jboss.netty.channel.{Channel, ChannelFactory, ChannelPipelineFactory, Channels}
@@ -78,6 +78,14 @@ class Kestrel(defaultQueueConfig: QueueConfig, builders: List[QueueBuilder],
   var textAcceptor: Option[Channel] = None
   val channelGroup = new DefaultChannelGroup("channels")
 
+  private def bytesRead(n: Int) {
+    Stats.incr("bytes_read", n)
+  }
+
+  private def bytesWritten(n: Int) {
+    Stats.incr("bytes_written", n)
+  }
+
   def start() {
     log.info("Kestrel config: listenAddress=%s memcachePort=%s textPort=%s queuePath=%s " +
              "protocol=%s expirationTimerFrequency=%s clientTimeout=%s maxOpenTransactions=%d",
@@ -96,7 +104,7 @@ class Kestrel(defaultQueueConfig: QueueConfig, builders: List[QueueBuilder],
     val memcachePipelineFactory = new ChannelPipelineFactory() {
       def getPipeline() = {
         val protocolCodec = protocol match {
-          case Protocol.Ascii => MemcacheCodec.asciiCodec
+          case Protocol.Ascii => MemcacheCodec.asciiCodec(bytesRead, bytesWritten)
           case Protocol.Binary => throw new Exception("Binary protocol not supported yet.")
         }
         val handler = new MemcacheHandler(channelGroup, queueCollection, maxOpenTransactions, clientTimeout)
@@ -110,7 +118,7 @@ class Kestrel(defaultQueueConfig: QueueConfig, builders: List[QueueBuilder],
 
     val textPipelineFactory = new ChannelPipelineFactory() {
       def getPipeline() = {
-        val protocolCodec = TextCodec.decoder
+        val protocolCodec = TextCodec(bytesRead, bytesWritten)
         val handler = new TextHandler(channelGroup, queueCollection, maxOpenTransactions, clientTimeout)
         Channels.pipeline(protocolCodec, handler)
       }
@@ -123,16 +131,14 @@ class Kestrel(defaultQueueConfig: QueueConfig, builders: List[QueueBuilder],
     // optionally, start a periodic timer to clean out expired items.
     if (expirationTimerFrequency.isDefined) {
       log.info("Starting up background expiration task.")
-      val expirationTask = new TimerTask {
-        def run(timeout: Timeout) {
+      new PeriodicBackgroundProcess("background-expiration", expirationTimerFrequency.get) {
+        def periodic() {
           val expired = Kestrel.this.queueCollection.flushAllExpired()
           if (expired > 0) {
             log.info("Expired %d item(s) from queues automatically.", expired)
           }
-          timer.newTimeout(this, expirationTimerFrequency.get.inMilliseconds, TimeUnit.MILLISECONDS)
         }
-      }
-      expirationTask.run(null)
+      }.start()
     }
   }
 
@@ -155,7 +161,7 @@ class Kestrel(defaultQueueConfig: QueueConfig, builders: List[QueueBuilder],
   override def reload() {
     try {
       log.info("Reloading %s ...", Kestrel.runtime.configFile)
-      Eval[KestrelConfig](Kestrel.runtime.configFile).reload(this)
+      new Eval().apply[KestrelConfig](Kestrel.runtime.configFile).reload(this)
     } catch {
       case e: Eval.CompilerException =>
         log.error(e, "Error in config: %s", e)
@@ -175,7 +181,6 @@ class Kestrel(defaultQueueConfig: QueueConfig, builders: List[QueueBuilder],
     bootstrap.setOption("reuseAddress", true)
     bootstrap.setOption("child.keepAlive", true)
     bootstrap.setOption("child.tcpNoDelay", true)
-    bootstrap.setOption("child.receiveBufferSize", 2048)
     bootstrap.bind(address)
   }
 }

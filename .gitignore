@@ -12,3 +12,10 @@ project/plugins/src_managed/
 project/plugins/project/
 lib_managed/
 ignore/
+*.iml
+.idea/
+.classpath
+.project
+.scala_dependencies
+.settings/
+go

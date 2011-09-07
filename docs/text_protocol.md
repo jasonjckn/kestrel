@@ -71,10 +71,8 @@ And you can close your connection explicitly:
 
 ## To-do
 
-delete
 flush_all
 flush_expired
 flush_all_expired
 roll
-version
 reload

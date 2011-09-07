@@ -18,11 +18,11 @@
 package net.lag.kestrel
 
 import scala.collection.mutable
-import com.twitter.admin.{BackgroundProcess, ServiceTracker}
 import com.twitter.conversions.time._
 import com.twitter.logging.Logger
-import com.twitter.stats.Stats
-import com.twitter.util.{Duration, Time}
+import com.twitter.ostrich.admin.{BackgroundProcess, ServiceTracker}
+import com.twitter.ostrich.stats.Stats
+import com.twitter.util.{Future, Duration, Time}
 
 class TooManyOpenTransactionsException extends Exception("Too many open transactions.")
 object TooManyOpenTransactionsException extends TooManyOpenTransactionsException
@@ -94,6 +94,8 @@ abstract class KestrelHandler(val queues: QueueCollection, val maxOpenTransactio
     }
 
     def size(name: String): Int = synchronized { transactions(name).size }
+
+    def peek(name: String): List[Int] = synchronized { transactions(name).toList }
 
     def cancelAll() {
       synchronized {
@@ -204,7 +206,7 @@ abstract class KestrelHandler(val queues: QueueCollection, val maxOpenTransactio
     || (pendingTransactions.size(key) + pendingRATransactions.size(key)) >= maxOpenTransactions) {
       f(None)
     } else {
-      queues.remove(key, Some(timeLimit), true, false) {
+      queues.remove(key, Some(timeLimit), true, false).onSuccess {
         case None =>
           f(None)
         case x @ Some(item) =>
@@ -235,8 +237,8 @@ abstract class KestrelHandler(val queues: QueueCollection, val maxOpenTransactio
     }
   }
 
-  def getItem(key: String, timeout: Option[Time], opening: Boolean, peeking: Boolean)(f: Option[QItem] => Unit) {
-    if (opening && (pendingTransactions.size(key) + pendingRATransactions.size(key) >= maxOpenTransactions)) {
+  def getItem(key: String, timeout: Option[Time], opening: Boolean, peeking: Boolean): Future[Option[QItem]] = {
+    if (opening && pendingTransactions.size(key) >= maxOpenTransactions) {
       log.warning("Attempt to open too many transactions on '%s' (sid %d, %s)", key, sessionId,
                   clientDescription)
       throw TooManyOpenTransactionsException
@@ -248,13 +250,12 @@ abstract class KestrelHandler(val queues: QueueCollection, val maxOpenTransactio
     } else {
       Stats.incr("cmd_get")
     }
-    queues.remove(key, timeout, opening, peeking) {
-      case None =>
-        f(None)
-      case Some(item) =>
+    queues.remove(key, timeout, opening, peeking).map { itemOption =>
+      itemOption.foreach { item =>
         log.debug("get <- %s", item)
         if (opening) pendingTransactions.add(key, item.xid)
-        f(Some(item))
+      }
+      itemOption
     }
   }
 
@@ -269,17 +270,12 @@ abstract class KestrelHandler(val queues: QueueCollection, val maxOpenTransactio
     queues.add(key, data, expiry)
   }
 
-  protected def flush(key: String) = {
+  protected def flush(key: String) {
     log.debug("flush -> q=%s", key)
     queues.flush(key)
   }
 
-  protected def rollJournal(key: String) {
-    log.debug("roll -> q=%s", key)
-    queues.rollJournal(key)
-  }
-
-  protected def delete(key: String) = {
+  protected def delete(key: String) {
     log.debug("delete -> q=%s", key)
     queues.delete(key)
   }
