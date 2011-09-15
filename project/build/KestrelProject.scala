@@ -9,7 +9,7 @@ class KestrelProject(info: ProjectInfo) extends StandardServiceProject(info) wit
 {
   val util = "com.twitter" % "util-core" % "1.8.1"
 
-  val ostrich = "com.twitter" % "ostrich" % "4.7.3"
+  val ostrich = "com.twitter" % "ostrich" % "4.9.2"
   val naggati = "com.twitter" % "naggati" % "2.1.1"
 
   val specs = "org.scala-tools.testing" % "specs_2.8.1" % "1.6.7" % "test"
@@ -35,7 +35,7 @@ class KestrelProject(info: ProjectInfo) extends StandardServiceProject(info) wit
       </license>
     </licenses>
 
-  override def releaseBuild = true
+  override def releaseBuild = !(projectVersion.toString contains "SNAPSHOT")
 
   override def subversionRepository = Some("http://svn.local.twitter.com/maven-public")
 
