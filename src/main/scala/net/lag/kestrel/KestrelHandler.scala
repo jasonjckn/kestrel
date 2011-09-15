@@ -217,7 +217,7 @@ abstract class KestrelHandler(val queues: QueueCollection, val maxOpenTransactio
     }
   }
 
-  def getItemSyn(key: String, timeout: Option[Time])(f: Option[QItem] => Unit) {
+  def getItemSyn(key: String, timeout: Option[Time]): Future[Option[QItem]] = {
     if (pendingTransactions.size(key) + pendingRATransactions.size(key) >= maxOpenTransactions) {
       log.warning("Attempt to open too many transactions on '%s' (sid %d, %s)", key, sessionId,
                   clientDescription)
@@ -227,13 +227,12 @@ abstract class KestrelHandler(val queues: QueueCollection, val maxOpenTransactio
     log.debug("get -> q=%s t=%s syn=true", key, timeout)
     Stats.incr("cmd_get")
 
-    queues.remove(key, timeout, true, false) {
-      case None =>
-        f(None)
-      case Some(item) =>
+    queues.remove(key, timeout, true, false).map { itemOption =>
+      itemOption.foreach { item =>
         log.debug("get <- %s", item)
         pendingRATransactions.add(key, item.xid)
-        f(Some(item))
+      }
+      itemOption
     }
   }
 
