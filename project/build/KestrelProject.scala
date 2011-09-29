@@ -57,6 +57,10 @@ class KestrelProject(info: ProjectInfo)
 
 //  override def fork = forkRun(List("-Xmx1024m", "-verbosegc", "-XX:+PrintGCDetails"))
 
+  lazy val getMany = task { args =>
+    runTask(Some("net.lag.kestrel.load.GetMany"), testClasspath, args).dependsOn(testCompile)
+  } describedAs "Run a load test on GET."
+
   lazy val putMany = task { args =>
     runTask(Some("net.lag.kestrel.load.PutMany"), testClasspath, args).dependsOn(testCompile)
   } describedAs "Run a load test on PUT."

@@ -27,7 +27,7 @@ import com.twitter.conversions.string._
  * Spam a kestrel server with 1M copies of a pop song lyric, to see how
  * quickly it can absorb them.
  */
-object PutMany extends LoadTesting {
+object GetMany extends LoadTesting {
   private val LYRIC =
 "crossed off, but never forgotten\n" +
 "misplaced, but never losing hold\n" +
@@ -86,6 +86,42 @@ object PutMany extends LoadTesting {
     }
   }
 
+  def get(socket: SocketChannel, queueName: String, n: Int, globalTimings: mutable.ListBuffer[Long], data: String) = {
+    
+    def repeatData(n: Int) : List[String] = if (n>0) data :: repeatData(n-1) else Nil
+
+    val spam = if (rollup == 1) client.get(queueName, None) else client.getN(queueName, None, rollup)
+    val expect = if (rollup == 1) client.getSuccess(queueName, data) else client.getNSuccess(queueName, repeatData(rollup))
+
+    val buffer = ByteBuffer.allocate(expect.capacity)
+    val timings = new Array[Long](n min 100000)
+
+    var timingCounter = 0
+    var i = 0
+    while (i < n) {
+      val startTime = System.nanoTime
+      send(socket, spam)
+      receive(socket, buffer)
+      if (i < 100000) {
+        timings(timingCounter) = System.nanoTime - startTime
+      }
+      expect.rewind()
+      if (buffer != expect) {
+        // the "!" is important.
+        throw new Exception("Unexpected response at " + i + "!")
+      }
+      i += rollup
+      timingCounter += 1
+    }
+
+    // coalesce timings
+    globalTimings.synchronized {
+      if (globalTimings.size < 100000) {
+        globalTimings ++= timings.toList
+      }
+    }
+  }
+
   var clientCount = 100
   var totalItems = 10000
   var bytes = 1024
@@ -109,7 +145,7 @@ object PutMany extends LoadTesting {
     Console.println("    -b BYTES")
     Console.println("        put BYTES per queue item (default: %d)".format(bytes))
     Console.println("    -r ITEMS")
-    Console.println("        roll up ITEMS items into a single multi-put request (default: %d)".format(rollup))
+    Console.println("        roll up ITEMS items into a single multi-get request (default: %d)".format(rollup))
     Console.println("    -q NAME")
     Console.println("        use queue NAME as prefix (default: %s)".format(queueName))
     Console.println("    -Q QUEUES")
@@ -120,8 +156,8 @@ object PutMany extends LoadTesting {
     Console.println("        use kestrel on PORT (default: %d)".format(port))
     Console.println("    --thrift")
     Console.println("        use thrift RPC")
-    Console.println("    -F")
-    Console.println("        don't flush queue(s) before the test")
+    Console.println("    -f")
+    Console.println("        don't flush queue(s) and fill the queue with spam before the test")
   }
 
   def parseArgs(args: List[String]): Unit = args match {
@@ -188,14 +224,37 @@ object PutMany extends LoadTesting {
       println("Flushing queues first.")
       val socket = tryHard { SocketChannel.open(new InetSocketAddress(hostname, port)) }
       for (i <- 0 until queueCount) {
-        val name = queueName + (if (queueCount > 1) (i % queueCount).toString else "")
-        send(socket, client.flush(name))
+        val qName = queueName + (if (queueCount > 1) (i % queueCount).toString else "")
+        send(socket, client.flush(qName))
         expect(socket, client.flushSuccess())
       }
       socket.close()
     }
 
-    println("Put %d items of %d bytes in bursts of %d to %s:%d in %d queues named %s using %d clients.".format(
+    // populate queues first
+    if (flushFirst) {
+      println("Populating queues first.")
+      for (i <- 0 until clientCount) {
+        val t = new Thread {
+          override def run = {
+            val socket = tryHard { SocketChannel.open(new InetSocketAddress(hostname, port)) }
+            val qName = queueName + (if (queueCount > 1) (i % queueCount).toString else "")
+            put(socket, qName, totalItems / clientCount, new mutable.ListBuffer[Long], rawData.toString)
+          }
+        }
+        threadList = t :: threadList
+        t.start
+      }
+      for (t <- threadList) {
+        t.join
+      }
+    }
+    threadList = Nil
+
+
+    // dequeue queues.
+
+    println("Get %d items of %d bytes in batches of %d to %s:%d in %d queues named %s using %d clients.".format(
       totalItems, bytes, rollup, hostname, port, queueCount, queueName, clientCount))
 
     val startTime = System.currentTimeMillis
@@ -205,7 +264,7 @@ object PutMany extends LoadTesting {
         override def run = {
           val socket = tryHard { SocketChannel.open(new InetSocketAddress(hostname, port)) }
           val qName = queueName + (if (queueCount > 1) (i % queueCount).toString else "")
-          put(socket, qName, totalItems / clientCount, timings, rawData.toString)
+          get(socket, qName, totalItems / clientCount, timings, rawData.toString)
         }
       }
       threadList = t :: threadList
